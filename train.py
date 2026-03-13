@@ -58,16 +58,32 @@ def dice_coeff(pred, target, eps=1e-6):
     union = pred.sum(dim=[2, 3]) + target.sum(dim=[2, 3])
     return ((2.0 * inter + eps) / (union + eps)).mean()
 
+class DiceBCELoss(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(DiceBCELoss, self).__init__()
+
+    def forward(self, inputs, targets, smooth=1):
+        inputs = torch.sigmoid(inputs)       
+        
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        
+        intersection = (inputs * targets).sum()                            
+        dice_loss = 1 - (2.*intersection + smooth)/(inputs.sum() + targets.sum() + smooth)  
+        BCE = F.binary_cross_entropy(inputs, targets, reduction='mean')
+        Dice_BCE = BCE + dice_loss
+        
+        return Dice_BCE
+
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log_dir = Path(SAVE_DIR) / "logs"
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=str(log_dir))
     
-    # Transforms
     train_tf = Compose([
-        RandomAffine(degrees=20, translate=(0.1, 0.1), scale=(0.9, 1.1)),
-        ColorJitter(brightness=0.2, contrast=0.2),
+        RandomAffine(degrees=30, translate=(0.15, 0.15), scale=(0.8, 1.2)),
+        ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
         Resize((IMG_SIZE, IMG_SIZE)),
         ToTensor(),
         Normalize(mean=MEAN, std=STD),
@@ -85,7 +101,9 @@ def train():
 
     model = UNet(in_channels=3, out_channels=1).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    criterion = nn.BCEWithLogitsLoss()
+    
+    criterion = DiceBCELoss()
+    
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
     best_dice = 0.0
@@ -114,7 +132,6 @@ def train():
         train_loss /= len(train_ds); train_dice /= len(train_ds)
         writer.add_scalar("Loss/Train", train_loss, epoch)
         writer.add_scalar("Dice/Train", train_dice, epoch)
-        writer.add_scalar("LR", scheduler.get_last_lr()[0], epoch)
 
         model.eval()
         val_loss, val_dice = 0, 0
@@ -143,7 +160,7 @@ def train():
         writer.add_scalar("Dice/Val", val_dice, epoch)
         
         scheduler.step()
-        print(f"Summary -> Train Dice: {train_dice:.4f} | Val Dice: {val_dice:.4f} | LR: {scheduler.get_last_lr()[0]:.6f}")
+        print(f"Summary -> Train Dice: {train_dice:.4f} | Val Dice: {val_dice:.4f}")
 
         if val_dice > best_dice:
             best_dice = val_dice
